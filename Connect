@@ -1,21 +1,19 @@
 #include <LiquidCrystal.h>
-#include <Keypad.h>
 
 // === LCD 1602 ===
 LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
 
-// === Клавиатура 4x4 ===
-const byte ROWS = 4;
-const byte COLS = 4;
-char keys[ROWS][COLS] = {
+// === Пины клавиатуры 4x4 ===
+const byte rowPins[4] = {10, 9, 8, 7};
+const byte colPins[4] = {6, A0, A1, A2};
+
+// Символы на клавиатуре
+char keys[4][4] = {
   {'1','2','3','A'},
   {'4','5','6','B'},
   {'7','8','9','C'},
   {'*','0','#','D'}
 };
-byte rowPins[ROWS] = {10, 9, 8, 7};
-byte colPins[COLS] = {6, A0, A1, A2};
-Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 
 // === Светодиод ===
 const int LAMP_PIN = 13;
@@ -26,7 +24,7 @@ const unsigned long LAMP_TIMEOUT = 30000;
 // === Кнопка открытия двери ===
 const int DOOR_BUTTON_PIN = A3;
 
-// === Состояния (НОВЫЕ ИМЕНА — без конфликта с Keypad) ===
+// === Состояния системы ===
 #define SYS_IDLE 0
 #define SYS_WAIT_PASSWORD 1
 #define SYS_CREATE_PASSWORD 2
@@ -37,7 +35,33 @@ String password = "";
 int targetApt = 0;
 String savedPasswords[100];
 
-// ========== ФУНКЦИИ ==========
+// ========== ФУНКЦИЯ ОПРОСА КЛАВИАТУРЫ (своя) ==========
+char getKey() {
+  // Настройка строк на OUTPUT и LOW
+  for (int r = 0; r < 4; r++) {
+    pinMode(rowPins[r], OUTPUT);
+    digitalWrite(rowPins[r], LOW);
+  }
+  // Настройка столбцов на INPUT_PULLUP
+  for (int c = 0; c < 4; c++) {
+    pinMode(colPins[c], INPUT_PULLUP);
+  }
+
+  for (int r = 0; r < 4; r++) {
+    digitalWrite(rowPins[r], HIGH);
+    for (int c = 0; c < 4; c++) {
+      if (digitalRead(colPins[c]) == LOW) {
+        delay(50); // антидребезг
+        while (digitalRead(colPins[c]) == LOW) {}
+        return keys[r][c];
+      }
+    }
+    digitalWrite(rowPins[r], LOW);
+  }
+  return 0;
+}
+
+// ========== ОСТАЛЬНЫЕ ФУНКЦИИ ==========
 void lcdPrint(String line1, String line2) {
   lcd.clear();
   lcd.setCursor(0, 0);
@@ -97,13 +121,11 @@ void resetSystem() {
 }
 
 void processKey(char key) {
-  // Сброс по #
   if (key == '#') {
     resetSystem();
     return;
   }
 
-  // === СОСТОЯНИЕ SYS_IDLE: ожидание номера квартиры ===
   if (sysState == SYS_IDLE) {
     if (key >= '0' && key <= '9') {
       if (apartment.length() < 2) {
@@ -146,8 +168,6 @@ void processKey(char key) {
       lcdPrint("Create password", "Apt * pwd *");
     }
   }
-
-  // === СОСТОЯНИЕ SYS_WAIT_PASSWORD: ожидание пароля ===
   else if (sysState == SYS_WAIT_PASSWORD) {
     if (key >= '0' && key <= '9') {
       if (password.length() < 16) {
@@ -169,8 +189,6 @@ void processKey(char key) {
       lcdPrint("Cleared", "Enter password again");
     }
   }
-
-  // === СОСТОЯНИЕ SYS_CREATE_PASSWORD: создание пароля ===
   else if (sysState == SYS_CREATE_PASSWORD) {
     if (key >= '0' && key <= '9') {
       if (targetApt == 0) {
@@ -219,12 +237,11 @@ void setup() {
 
 // ========== LOOP ==========
 void loop() {
-  char key = keypad.getKey();
+  char key = getKey();
   if (key) {
     processKey(key);
   }
   
-  // Автовыключение лампочки через 30 сек
   if (lampState && (millis() - lampTimer >= LAMP_TIMEOUT)) {
     turnLampOff();
     lcdPrint("Call timeout", "Press # to reset");
@@ -232,7 +249,6 @@ void loop() {
     resetSystem();
   }
   
-  // Кнопка открытия двери
   static bool lastButton = HIGH;
   bool buttonState = digitalRead(DOOR_BUTTON_PIN);
   if (buttonState == LOW && lastButton == HIGH) {
