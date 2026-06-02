@@ -1,0 +1,213 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);  // адрес может быть 0x3F
+
+const int ANALOG_KEY_PIN = A0;
+const int LED_PIN = 3;
+
+// Пороговые значения для каждой кнопки (калибровка!)
+// Порядок: 1,2,3,A,4,5,6,B,7,8,9,C,*,0,#,D
+const int keyThresholds[16] = {
+  50, 100, 150, 200,  // 1,2,3,A
+  250, 300, 350, 400,  // 4,5,6,B
+  450, 500, 550, 600,  // 7,8,9,C
+  650, 700, 750, 800   // *,0,#,D
+};
+
+const char keys[16] = {'1','2','3','A','4','5','6','B','7','8','9','C','*','0','#','D'};
+
+// Состояния
+enum State { IDLE, WAITING_PASSWORD, CREATING_PASSWORD };
+State state = IDLE;
+
+String currentNumber = "";
+String tempPassword = "";
+int currentApartment = 0;
+String savedPasswords[100];
+bool lampState = false;
+unsigned long lampTimer = 0;
+
+char getKey() {
+  int val = analogRead(ANALOG_KEY_PIN);
+  for (int i = 0; i < 16; i++) {
+    if (val < keyThresholds[i]) {
+      delay(50);  // антидребезг
+      return keys[i];
+    }
+  }
+  return 0;
+}
+
+void lcdPrint(String line1, String line2) {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(line1);
+  lcd.setCursor(0, 1);
+  lcd.print(line2);
+}
+
+void savePassword(int apt, String pwd) {
+  if (apt >= 10 && apt <= 99 && pwd.length() >= 4 && pwd.length() <= 16) {
+    savedPasswords[apt] = pwd;
+    lcdPrint("Password saved", "for apt " + String(apt));
+  } else {
+    lcdPrint("Error", "invalid");
+  }
+}
+
+bool checkPassword(int apt, String pwd) {
+  return (apt >= 10 && apt <= 99 && savedPasswords[apt] == pwd);
+}
+
+void turnLampOn() {
+  digitalWrite(LED_PIN, HIGH);
+  lampState = true;
+  lampTimer = millis();
+  lcdPrint("Calling apt", currentNumber);
+}
+
+void turnLampOff() {
+  digitalWrite(LED_PIN, LOW);
+  lampState = false;
+}
+
+void openDoor() {
+  lcdPrint("Door opened!", "Welcome");
+  delay(2000);
+  turnLampOff();
+  resetSystem();
+}
+
+void resetSystem() {
+  state = IDLE;
+  currentNumber = "";
+  tempPassword = "";
+  currentApartment = 0;
+  turnLampOff();
+  lcdPrint("System ready", "Apt + A/B/D");
+}
+
+void processKey(char key) {
+  if (key == '#') {
+    resetSystem();
+    return;
+  }
+
+  switch(state) {
+    case IDLE:
+      if (key >= '0' && key <= '9') {
+        currentNumber += key;
+        if (currentNumber.length() > 2) currentNumber = currentNumber.substring(0,2);
+        lcdPrint("Apt: " + currentNumber, "A=call B=pwd C=clear");
+      }
+      else if (key == 'A') {
+        int apt = currentNumber.toInt();
+        if (apt >= 10 && apt <= 99) turnLampOn();
+        else lcdPrint("Invalid apt", "10-99 only");
+      }
+      else if (key == 'B') {
+        int apt = currentNumber.toInt();
+        if (apt >= 10 && apt <= 99) {
+          currentApartment = apt;
+          state = WAITING_PASSWORD;
+          tempPassword = "";
+          lcdPrint("Enter password", "then A");
+        }
+      }
+      else if (key == 'C') {
+        currentNumber = "";
+        lcdPrint("Cleared", "Enter apt");
+      }
+      else if (key == 'D') {
+        state = CREATING_PASSWORD;
+        currentNumber = "";
+        tempPassword = "";
+        currentApartment = 0;
+        lcdPrint("Create password", "Apt then * then pwd then *");
+      }
+      break;
+
+    case WAITING_PASSWORD:
+      if (key >= '0' && key <= '9') {
+        if (tempPassword.length() < 16) {
+          tempPassword += key;
+          lcdPrint("Password: " + String(tempPassword.length()) + " digits", "then A");
+        }
+      }
+      else if (key == 'A') {
+        if (checkPassword(currentApartment, tempPassword)) turnLampOn();
+        else lcdPrint("Wrong password", "Access denied");
+        state = IDLE;
+      }
+      else if (key == 'C') {
+        tempPassword = "";
+        lcdPrint("Cleared", "Enter password again");
+      }
+      break;
+
+    case CREATING_PASSWORD:
+      if (key >= '0' && key <= '9') {
+        if (currentApartment == 0) {
+          if (currentNumber.length() < 2) currentNumber += key;
+        } else {
+          if (tempPassword.length() < 16) {
+            tempPassword += key;
+            lcdPrint("Password: " + String(tempPassword.length()) + "/4-16", "then * to save");
+          }
+        }
+      }
+      else if (key == '*') {
+        if (currentApartment == 0) {
+          int apt = currentNumber.toInt();
+          if (apt >= 10 && apt <= 99) {
+            currentApartment = apt;
+            tempPassword = "";
+            lcdPrint("Apt " + String(apt), "Enter password then *");
+          } else {
+            lcdPrint("Invalid apt", "Press #");
+            resetSystem();
+          }
+        } else {
+          if (tempPassword.length() >= 4) {
+            savePassword(currentApartment, tempPassword);
+            resetSystem();
+          } else {
+            lcdPrint("Too short", "min 4 digits");
+            resetSystem();
+          }
+        }
+      }
+      else if (key == 'C') {
+        currentNumber = "";
+        tempPassword = "";
+        currentApartment = 0;
+        lcdPrint("Cleared", "Start over with D");
+      }
+      break;
+  }
+}
+
+void setup() {
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+  
+  lcd.init();
+  lcd.backlight();
+  resetSystem();
+}
+
+void loop() {
+  char key = getKey();
+  if (key) processKey(key);
+  
+  // Автовыключение лампочки через 30 секунд
+  if (lampState && (millis() - lampTimer > 30000)) {
+    turnLampOff();
+    lcdPrint("Call timeout", "Press #");
+  }
+  
+  // Автооткрытие двери? Если хотите — добавьте, но по вашей логике
+  // открытие происходит автоматически при успешном вызове/пароле
+  // (уже есть в turnLampOn)
+}
