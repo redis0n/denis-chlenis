@@ -17,27 +17,27 @@ byte rowPins[ROWS] = {10, 9, 8, 7};
 byte colPins[COLS] = {6, A0, A1, A2};
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 
-// === Светодиод (лампочка вызова) ===
+// === Светодиод ===
 const int LAMP_PIN = 13;
 bool lampState = false;
 unsigned long lampTimer = 0;
-const unsigned long LAMP_TIMEOUT = 30000; // 30 секунд
+const unsigned long LAMP_TIMEOUT = 30000;
 
 // === Кнопка открытия двери ===
 const int DOOR_BUTTON_PIN = A3;
 
-// === Состояния системы ===
-enum State { IDLE, WAIT_PASSWORD, CREATE_PASSWORD };
-State state = IDLE;
+// === Состояния (НОВЫЕ ИМЕНА — без конфликта с Keypad) ===
+#define SYS_IDLE 0
+#define SYS_WAIT_PASSWORD 1
+#define SYS_CREATE_PASSWORD 2
+int sysState = SYS_IDLE;
 
-String apartment = "";      // номер квартиры (10-99)
-String password = "";       // временный пароль
-int targetApt = 0;          // квартира для пароля
-
-// Хранилище паролей (для квартир 10-99)
+String apartment = "";
+String password = "";
+int targetApt = 0;
 String savedPasswords[100];
 
-// === Функции ===
+// ========== ФУНКЦИИ ==========
 void lcdPrint(String line1, String line2) {
   lcd.clear();
   lcd.setCursor(0, 0);
@@ -76,7 +76,7 @@ void savePassword(int apt, String pwd) {
     lcdPrint("Password saved", "for apt " + String(apt));
     delay(1500);
   } else {
-    lcdPrint("ERROR: invalid", "apt or length");
+    lcdPrint("ERROR", "4-16 digits only");
     delay(1500);
   }
   resetSystem();
@@ -88,7 +88,7 @@ bool checkPassword(int apt, String pwd) {
 }
 
 void resetSystem() {
-  state = IDLE;
+  sysState = SYS_IDLE;
   apartment = "";
   password = "";
   targetApt = 0;
@@ -97,118 +97,117 @@ void resetSystem() {
 }
 
 void processKey(char key) {
-  // Кнопка # — полный сброс
+  // Сброс по #
   if (key == '#') {
     resetSystem();
     return;
   }
 
-  switch (state) {
-    case IDLE:
-      // Цифры номера квартиры
-      if (key >= '0' && key <= '9') {
-        if (apartment.length() < 2) {
-          apartment += key;
-          lcdPrint("Apt: " + apartment, "A=call B=pwd C=clear");
-        }
+  // === СОСТОЯНИЕ SYS_IDLE: ожидание номера квартиры ===
+  if (sysState == SYS_IDLE) {
+    if (key >= '0' && key <= '9') {
+      if (apartment.length() < 2) {
+        apartment += key;
+        lcdPrint("Apt: " + apartment, "A=call B=pwd C=clear");
       }
-      // A — вызов
-      else if (key == 'A') {
-        int apt = apartment.toInt();
-        if (apt >= 10 && apt <= 99) {
-          turnLampOn();
-        } else {
-          lcdPrint("Invalid apt", "need 10-99");
-          apartment = "";
-          delay(1500);
-        }
-      }
-      // B — ввод пароля
-      else if (key == 'B') {
-        int apt = apartment.toInt();
-        if (apt >= 10 && apt <= 99) {
-          targetApt = apt;
-          state = WAIT_PASSWORD;
-          password = "";
-          lcdPrint("Enter password", "for apt " + String(apt) + " then A");
-        } else {
-          lcdPrint("Enter apt first", "10-99");
-          apartment = "";
-          delay(1500);
-        }
-      }
-      // C — стереть
-      else if (key == 'C') {
+    }
+    else if (key == 'A') {
+      int apt = apartment.toInt();
+      if (apt >= 10 && apt <= 99) {
+        turnLampOn();
+      } else {
+        lcdPrint("Invalid apt", "need 10-99");
         apartment = "";
-        lcdPrint("Cleared", "Enter apt");
+        delay(1500);
       }
-      // D — режим создания пароля
-      else if (key == 'D') {
-        state = CREATE_PASSWORD;
-        apartment = "";
+    }
+    else if (key == 'B') {
+      int apt = apartment.toInt();
+      if (apt >= 10 && apt <= 99) {
+        targetApt = apt;
+        sysState = SYS_WAIT_PASSWORD;
         password = "";
-        targetApt = 0;
-        lcdPrint("Create password", "Apt * pwd *");
+        lcdPrint("Enter password", "for apt " + String(apt) + " then A");
+      } else {
+        lcdPrint("Enter apt first", "10-99");
+        apartment = "";
+        delay(1500);
       }
-      break;
+    }
+    else if (key == 'C') {
+      apartment = "";
+      lcdPrint("Cleared", "Enter apt");
+    }
+    else if (key == 'D') {
+      sysState = SYS_CREATE_PASSWORD;
+      apartment = "";
+      password = "";
+      targetApt = 0;
+      lcdPrint("Create password", "Apt * pwd *");
+    }
+  }
 
-    case WAIT_PASSWORD:
-      if (key >= '0' && key <= '9') {
+  // === СОСТОЯНИЕ SYS_WAIT_PASSWORD: ожидание пароля ===
+  else if (sysState == SYS_WAIT_PASSWORD) {
+    if (key >= '0' && key <= '9') {
+      if (password.length() < 16) {
+        password += key;
+        lcdPrint("Password: " + String(password.length()) + " digits", "then A");
+      }
+    }
+    else if (key == 'A') {
+      if (checkPassword(targetApt, password)) {
+        turnLampOn();
+      } else {
+        lcdPrint("Wrong password", "Access denied");
+        delay(2000);
+      }
+      resetSystem();
+    }
+    else if (key == 'C') {
+      password = "";
+      lcdPrint("Cleared", "Enter password again");
+    }
+  }
+
+  // === СОСТОЯНИЕ SYS_CREATE_PASSWORD: создание пароля ===
+  else if (sysState == SYS_CREATE_PASSWORD) {
+    if (key >= '0' && key <= '9') {
+      if (targetApt == 0) {
+        if (apartment.length() < 2) apartment += key;
+      } else {
         if (password.length() < 16) {
           password += key;
-          lcdPrint("Password: " + String(password.length()) + " digits", "then A");
-        }
-      }
-      else if (key == 'A') {
-        if (checkPassword(targetApt, password)) {
-          turnLampOn();
-        } else {
-          lcdPrint("Wrong password", "Access denied");
-          delay(2000);
-        }
-        resetSystem();
-      }
-      else if (key == 'C') {
-        password = "";
-        lcdPrint("Cleared", "Enter password again");
-      }
-      break;
-
-    case CREATE_PASSWORD:
-      if (key >= '0' && key <= '9') {
-        if (targetApt == 0) {
-          if (apartment.length() < 2) apartment += key;
-        } else {
-          if (password.length() < 16) password += key;
           lcdPrint("Password: " + String(password.length()) + "/4-16", "then * to save");
         }
       }
-      else if (key == '*') {
-        if (targetApt == 0) {
-          int apt = apartment.toInt();
-          if (apt >= 10 && apt <= 99) {
-            targetApt = apt;
-            password = "";
-            lcdPrint("Apt " + String(apt), "Enter password then *");
-          } else {
-            lcdPrint("Invalid apt", "10-99");
-            delay(1500);
-            resetSystem();
-          }
+    }
+    else if (key == '*') {
+      if (targetApt == 0) {
+        int apt = apartment.toInt();
+        if (apt >= 10 && apt <= 99) {
+          targetApt = apt;
+          password = "";
+          lcdPrint("Apt " + String(apt), "Enter password then *");
         } else {
-          savePassword(targetApt, password);
+          lcdPrint("Invalid apt", "10-99");
+          delay(1500);
+          resetSystem();
         }
+      } else {
+        savePassword(targetApt, password);
       }
-      else if (key == 'C') {
-        apartment = "";
-        password = "";
-        targetApt = 0;
-        lcdPrint("Cleared", "Start over with D");
-      }
-      break;
+    }
+    else if (key == 'C') {
+      apartment = "";
+      password = "";
+      targetApt = 0;
+      lcdPrint("Cleared", "Start over with D");
+    }
   }
 }
 
+// ========== SETUP ==========
 void setup() {
   pinMode(LAMP_PIN, OUTPUT);
   pinMode(DOOR_BUTTON_PIN, INPUT_PULLUP);
@@ -218,13 +217,14 @@ void setup() {
   resetSystem();
 }
 
+// ========== LOOP ==========
 void loop() {
   char key = keypad.getKey();
   if (key) {
     processKey(key);
   }
   
-  // Автовыключение лампочки
+  // Автовыключение лампочки через 30 сек
   if (lampState && (millis() - lampTimer >= LAMP_TIMEOUT)) {
     turnLampOff();
     lcdPrint("Call timeout", "Press # to reset");
