@@ -1,6 +1,13 @@
+#include <LiquidCrystal.h>
+
+// === LCD 1602 ===
+LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
+
+// === Пины клавиатуры 4x4 ===
 const byte rowPins[4] = {10, 9, 8, 7};
 const byte colPins[4] = {6, A0, A1, A2};
 
+// Символы на клавиатуре
 char keys[4][4] = {
   {'1','2','3','A'},
   {'4','5','6','B'},
@@ -8,38 +15,247 @@ char keys[4][4] = {
   {'*','0','#','D'}
 };
 
-void setup() {
-  Serial.begin(9600);
-  for (int i = 0; i < 4; i++) {
-    pinMode(rowPins[i], OUTPUT);
-    digitalWrite(rowPins[i], HIGH);
-  }
-  for (int i = 0; i < 4; i++) {
-    pinMode(colPins[i], INPUT_PULLUP);
-  }
-  Serial.println("Ready");
-}
+// === Светодиод ===
+const int LAMP_PIN = 13;
+bool lampState = false;
+unsigned long lampTimer = 0;
+const unsigned long LAMP_TIMEOUT = 30000;
 
+// === Кнопка открытия двери ===
+const int DOOR_BUTTON_PIN = A3;
+
+// === Состояния системы ===
+#define SYS_IDLE 0
+#define SYS_WAIT_PASSWORD 1
+#define SYS_CREATE_PASSWORD 2
+int sysState = SYS_IDLE;
+
+String apartment = "";
+String password = "";
+int targetApt = 0;
+String savedPasswords[100];
+
+// ========== ФУНКЦИЯ ОПРОСА КЛАВИАТУРЫ (своя) ==========
 char getKey() {
+  // Настройка строк на OUTPUT и LOW
   for (int r = 0; r < 4; r++) {
+    pinMode(rowPins[r], OUTPUT);
     digitalWrite(rowPins[r], LOW);
+  }
+  // Настройка столбцов на INPUT_PULLUP
+  for (int c = 0; c < 4; c++) {
+    pinMode(colPins[c], INPUT_PULLUP);
+  }
+
+  for (int r = 0; r < 4; r++) {
+    digitalWrite(rowPins[r], HIGH);
     for (int c = 0; c < 4; c++) {
       if (digitalRead(colPins[c]) == LOW) {
-        delay(50);
+        delay(50); // антидребезг
         while (digitalRead(colPins[c]) == LOW) {}
-        digitalWrite(rowPins[r], HIGH);
         return keys[r][c];
       }
     }
-    digitalWrite(rowPins[r], HIGH);
+    digitalWrite(rowPins[r], LOW);
   }
   return 0;
 }
 
+// ========== ОСТАЛЬНЫЕ ФУНКЦИИ ==========
+void lcdPrint(String line1, String line2) {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(line1);
+  lcd.setCursor(0, 1);
+  lcd.print(line2);
+}
+
+void turnLampOn() {
+  lampState = true;
+  digitalWrite(LAMP_PIN, HIGH);
+  lampTimer = millis();
+  lcdPrint("Calling apt", apartment);
+}
+
+void turnLampOff() {
+  lampState = false;
+  digitalWrite(LAMP_PIN, LOW);
+}
+
+void openDoor() {
+  if (lampState) {
+    lcdPrint("DOOR OPENED", "Welcome!");
+    delay(2000);
+    turnLampOff();
+    resetSystem();
+  } else {
+    lcdPrint("No active call", "Press # to reset");
+    delay(1500);
+  }
+}
+
+void savePassword(int apt, String pwd) {
+  if (apt >= 10 && apt <= 99 && pwd.length() >= 4 && pwd.length() <= 16) {
+    savedPasswords[apt] = pwd;
+    lcdPrint("Password saved", "for apt " + String(apt));
+    delay(1500);
+  } else {
+    lcdPrint("ERROR", "4-16 digits only");
+    delay(1500);
+  }
+  resetSystem();
+}
+
+bool checkPassword(int apt, String pwd) {
+  if (apt < 10 || apt > 99) return false;
+  return savedPasswords[apt] == pwd;
+}
+
+void resetSystem() {
+  sysState = SYS_IDLE;
+  apartment = "";
+  password = "";
+  targetApt = 0;
+  turnLampOff();
+  lcdPrint("System ready", "Apt + A/B/D");
+}
+
+void processKey(char key) {
+  if (key == '#') {
+    resetSystem();
+    return;
+  }
+
+  if (sysState == SYS_IDLE) {
+    if (key >= '0' && key <= '9') {
+      if (apartment.length() < 2) {
+        apartment += key;
+        lcdPrint("Apt: " + apartment, "A=call B=pwd C=clear");
+      }
+    }
+    else if (key == 'A') {
+      int apt = apartment.toInt();
+      if (apt >= 10 && apt <= 99) {
+        turnLampOn();
+      } else {
+        lcdPrint("Invalid apt", "need 10-99");
+        apartment = "";
+        delay(1500);
+      }
+    }
+    else if (key == 'B') {
+      int apt = apartment.toInt();
+      if (apt >= 10 && apt <= 99) {
+        targetApt = apt;
+        sysState = SYS_WAIT_PASSWORD;
+        password = "";
+        lcdPrint("Enter password", "for apt " + String(apt) + " then A");
+      } else {
+        lcdPrint("Enter apt first", "10-99");
+        apartment = "";
+        delay(1500);
+      }
+    }
+    else if (key == 'C') {
+      apartment = "";
+      lcdPrint("Cleared", "Enter apt");
+    }
+    else if (key == 'D') {
+      sysState = SYS_CREATE_PASSWORD;
+      apartment = "";
+      password = "";
+      targetApt = 0;
+      lcdPrint("Create password", "Apt * pwd *");
+    }
+  }
+  else if (sysState == SYS_WAIT_PASSWORD) {
+    if (key >= '0' && key <= '9') {
+      if (password.length() < 16) {
+        password += key;
+        lcdPrint("Password: " + String(password.length()) + " digits", "then A");
+      }
+    }
+    else if (key == 'A') {
+      if (checkPassword(targetApt, password)) {
+        turnLampOn();
+      } else {
+        lcdPrint("Wrong password", "Access denied");
+        delay(2000);
+      }
+      resetSystem();
+    }
+    else if (key == 'C') {
+      password = "";
+      lcdPrint("Cleared", "Enter password again");
+    }
+  }
+  else if (sysState == SYS_CREATE_PASSWORD) {
+    if (key >= '0' && key <= '9') {
+      if (targetApt == 0) {
+        if (apartment.length() < 2) apartment += key;
+      } else {
+        if (password.length() < 16) {
+          password += key;
+          lcdPrint("Password: " + String(password.length()) + "/4-16", "then * to save");
+        }
+      }
+    }
+    else if (key == '*') {
+      if (targetApt == 0) {
+        int apt = apartment.toInt();
+        if (apt >= 10 && apt <= 99) {
+          targetApt = apt;
+          password = "";
+          lcdPrint("Apt " + String(apt), "Enter password then *");
+        } else {
+          lcdPrint("Invalid apt", "10-99");
+          delay(1500);
+          resetSystem();
+        }
+      } else {
+        savePassword(targetApt, password);
+      }
+    }
+    else if (key == 'C') {
+      apartment = "";
+      password = "";
+      targetApt = 0;
+      lcdPrint("Cleared", "Start over with D");
+    }
+  }
+}
+
+// ========== SETUP ==========
+void setup() {
+  pinMode(LAMP_PIN, OUTPUT);
+  pinMode(DOOR_BUTTON_PIN, INPUT_PULLUP);
+  digitalWrite(LAMP_PIN, LOW);
+  
+  lcd.begin(16, 2);
+  resetSystem();
+}
+
+// ========== LOOP ==========
 void loop() {
   char key = getKey();
   if (key) {
-    Serial.print("Pressed: ");
-    Serial.println(key);
+    processKey(key);
   }
+  
+  if (lampState && (millis() - lampTimer >= LAMP_TIMEOUT)) {
+    turnLampOff();
+    lcdPrint("Call timeout", "Press # to reset");
+    delay(2000);
+    resetSystem();
+  }
+  
+  static bool lastButton = HIGH;
+  bool buttonState = digitalRead(DOOR_BUTTON_PIN);
+  if (buttonState == LOW && lastButton == HIGH) {
+    delay(50);
+    if (digitalRead(DOOR_BUTTON_PIN) == LOW) {
+      openDoor();
+    }
+  }
+  lastButton = buttonState;
 }
